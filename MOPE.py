@@ -198,6 +198,8 @@ def create_rectangle_mask(corner1, corner2, resolution, angle=0):
 
 def eval_on_img(mask):
     """
+        Evaluation of change in response in masking on current image
+
         Args:
             x: tensor of shape (batch, imwidth, imheight) containing masking values
 
@@ -216,7 +218,7 @@ def eval_on_img(mask):
 
 def three_arg_black_box_function(x):
     """
-        The function to evaluate whether a point is inside a square batch. Required for MOPE optimization loop.
+        The black-box function optimized by Base BO
 
         Args:
             x: tensor of shape (batch, 3) defining square image masks with (location_x, location_y, size).
@@ -259,7 +261,7 @@ class CustomMultiObjective(MCMultiOutputObjective):
 # the botorch optimization loop for reference BO
 def botorch_optimize_loop(bboxfunction, iterations):
     """
-        The function to evaluate whether a point is inside a square batch. Required for MOPE optimization loop.
+        The optimization loop for  Base BO
 
         Args:
             bboxfunction: Black-box function to evaluate.
@@ -299,15 +301,15 @@ def botorch_optimize_loop(bboxfunction, iterations):
 
 def point_in_square_batch_from_corners(points: torch.Tensor, squares_min: torch.Tensor, squares_max: torch.Tensor) -> torch.Tensor:
     """
-    The function to evaluate whether a point is inside a square batch. Required for MOPE optimization loop.
+        The function to evaluate whether a point is inside a square batch. Required for MOPE optimization loop.
 
-    Args:
-        points: tensor of shape (points, 2)
-        squares_min: tensor of shape (squares, 2)
-        squares_max: tensor of shape (squares, 2)
+        Args:
+            points: tensor of shape (points, 2)
+            squares_min: tensor of shape (squares, 2)
+            squares_max: tensor of shape (squares, 2)
 
-    Returns:
-        tensor of shape (points,squares)
+        Returns:
+            tensor of shape (points,squares)
     """
     pdevice = points.device
     squares_min = squares_min.to(pdevice)
