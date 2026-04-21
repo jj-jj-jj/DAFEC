@@ -130,7 +130,17 @@ def try_wilcoxon(wx,wy):
         return 100
 
 def create_rectangle_mask(corner1, corner2, resolution, angle=0):
-    # angle currently unused due to providing no improvement
+
+    """
+        Args:
+            corner1: a tensor or np array of shape (batch, 2)
+            corner1: a tensor or np array of shape (batch, 2)
+            resolution: a tuple (imwidth, imheight)
+            angle: unused, leftover from earlier experiments
+
+        Returns:
+            a tensor of shape (batch, 1, imwidth, imheight) containing image masks defined by corner position
+    """
 
     corner1 = torch.as_tensor(corner1) # (batch, 2)
     corner2 = torch.as_tensor(corner2) # (batch, 2)
@@ -187,6 +197,13 @@ def create_rectangle_mask(corner1, corner2, resolution, angle=0):
 
 
 def eval_on_img(mask):
+    """
+        Args:
+            x: tensor of shape (batch, imwidth, imheight) containing masking values
+
+        Returns:
+            change (in response to masking) in the model output for the class originally returned by the model
+    """
     baseline = (model(x[None].to(device)))
     baseline_label = baseline.argmax().item()
     masking_value = 0
@@ -198,6 +215,15 @@ def eval_on_img(mask):
 
 
 def three_arg_black_box_function(x):
+    """
+        The function to evaluate whether a point is inside a square batch. Required for MOPE optimization loop.
+
+        Args:
+            x: tensor of shape (batch, 3) defining square image masks with (location_x, location_y, size).
+
+        Returns:
+            evaluation of rectangle masks withing batch
+    """
     sqr =  x[:,2:3]
     mask = create_rectangle_mask(x[:,:2]-sqr/2, x[:,:2]+sqr/2, (224, 224))
     return eval_on_img(mask)
@@ -216,7 +242,9 @@ class CustomProblemObjective(MCAcquisitionObjective):
 
 
 class CustomMultiObjective(MCMultiOutputObjective):
-    # leftover from multi-objective botorch experiments, currently only the first objective is used
+
+    # leftover code from multi-objective botorch experiments, which didn't make it to the paper. Currently only the first objective is used
+
     def __init__(self, train_X):
         super(CustomMultiObjective, self).__init__()
         self.train_X = train_X.detach()
@@ -229,11 +257,20 @@ class CustomMultiObjective(MCMultiOutputObjective):
 
 
 # the botorch optimization loop for reference BO
-def botorch_optimize_loop(bboxfunction, iterations, fix_features=False):
+def botorch_optimize_loop(bboxfunction, iterations):
+    """
+        The function to evaluate whether a point is inside a square batch. Required for MOPE optimization loop.
+
+        Args:
+            bboxfunction: Black-box function to evaluate.
+            iterations: Number of iterations.
+
+        Returns:
+            best result
+            Gausssian Process regressor for use in calculating the heatmap for Base BO.
+    """
     problem_dim = 3
     train_X = torch.rand(16, problem_dim, dtype = torch.double)
-    if fix_features:
-        train_X[:,2] = 1.0
     Y = bboxfunction(train_X).to(device="cpu", dtype = torch.double).detach()
 
     for i in range(iterations):
@@ -246,11 +283,10 @@ def botorch_optimize_loop(bboxfunction, iterations, fix_features=False):
         mll = ExactMarginalLogLikelihood(gp.likelihood, gp)
         fit_gpytorch_mll(mll)
         bounds = torch.stack([torch.zeros(problem_dim), torch.ones(problem_dim)]).to(torch.double)
-        # acquisition = UpperConfidenceBound(model=gp, best_f=Y.max())
         acquisition = qUpperConfidenceBound(model=gp, objective=CustomProblemObjective(train_X=train_X),beta=1)
         lerp_factor = (1+i)/iterations
         candidate, acq_value = optimize_acqf(
-          acquisition, bounds=bounds, q=4, num_restarts=5, raw_samples=20, fixed_features=  {2:1-lerp_factor} if fix_features else None, timeout_sec
+          acquisition, bounds=bounds, q=4, num_restarts=5, raw_samples=20, fixed_features=None, timeout_sec
             =0.05
         )
         candidate = torch.rand_like(candidate)
@@ -263,6 +299,8 @@ def botorch_optimize_loop(bboxfunction, iterations, fix_features=False):
 
 def point_in_square_batch_from_corners(points: torch.Tensor, squares_min: torch.Tensor, squares_max: torch.Tensor) -> torch.Tensor:
     """
+    The function to evaluate whether a point is inside a square batch. Required for MOPE optimization loop.
+
     Args:
         points: tensor of shape (points, 2)
         squares_min: tensor of shape (squares, 2)
@@ -286,9 +324,13 @@ def point_in_square_batch_from_corners(points: torch.Tensor, squares_min: torch.
 
     return in_square.detach().clone()
 
-# the optimization loop for MOPE
-def integration_optimize_loop(bboxfunction, iterations, fix_features=False):
+def integration_optimize_loop(iterations : int):
+    """
+        The optimization loop for MOPE
 
+        Args:
+            iterations: number of iterations
+    """
     point_sample_size = 256
     perturbation_sample_size = 8
     initial_sample_size = 16
@@ -301,17 +343,11 @@ def integration_optimize_loop(bboxfunction, iterations, fix_features=False):
     eval_sqr_sizes[0] += 1.0
 
     epsilon = 1e-2
-    within_bounds = point_in_square_batch_from_corners(mc_sample, eval_centers-eval_sqr_sizes/2, eval_centers+eval_sqr_sizes/2)    # (points,squares) matrix
     square_bounds = (torch.clamp(eval_centers-eval_sqr_sizes/2,0,1), torch.clamp(eval_centers+eval_sqr_sizes/2,0,1))
     area = (square_bounds[1][:,:1]-square_bounds[0][:,:1]) * (square_bounds[1][:,1:] - square_bounds[0][:,1:])
     sample_y = three_arg_black_box_function(torch.cat((eval_centers,eval_sqr_sizes),dim=1))/(area+epsilon)   # (points,1) - sampling  squares
-    y_sum = within_bounds.float()@sample_y  # (squares, 1)
-    mc_y = (y_sum/(1e-6 + within_bounds.sum(dim=1, keepdim=True))).detach().clone()
     # (b, 1)
 
-
-    if fix_features:
-        point_sample_size = point_sample_size // 16
 
     for it in range(iterations):
 
@@ -347,20 +383,15 @@ def integration_optimize_loop(bboxfunction, iterations, fix_features=False):
         eval_sqr_sizes = torch.cat((eval_sqr_sizes,new_eval_sqr_sizes),dim=0).detach()
         sample_y = torch.cat((sample_y,new_sample_y),dim=0).detach()
 
-        within_bounds = point_in_square_batch_from_corners(mc_sample, eval_centers-eval_sqr_sizes/2, eval_centers+eval_sqr_sizes/2)
-        y_sum = within_bounds.float()@sample_y
-        mc_y = (y_sum[:,0]/(1e-6 + within_bounds.sum(dim=1)))[:,None].detach().clone().requires_grad_(True)
-
     return (eval_centers,eval_sqr_sizes,sample_y), None
 
-# optimize function to get a heatmap from BO results
-def optimize(fix_features=False, botorch=False):
-    if not botorch:
-        return optimize_integrate(fix_features=fix_features)
+def optimize():
+
+    # optimize function to get a heatmap from BO results
 
     black_box_function = three_arg_black_box_function
 
-    out, gp_regressor = botorch_optimize_loop(black_box_function, 16, fix_features=fix_features)
+    out, gp_regressor = botorch_optimize_loop(black_box_function, 16)
 
     X = np.random.rand(512,3)
     y = gp_regressor.predict(X)[:,0]
@@ -373,9 +404,11 @@ def optimize(fix_features=False, botorch=False):
 
     return heatmap[None,None].detach().numpy()
 
-# optimize function to get a heatmap from MOPE
-def optimize_integrate(fix_features=False):
-    (eval_centers,eval_sqr_sizes,sample_y), gp_regressor = integration_optimize_loop( None, 8,fix_features=fix_features)
+def optimize_integrate():
+
+    # optimize function to get a heatmap from MOPE
+
+    (eval_centers,eval_sqr_sizes,sample_y), gp_regressor = integration_optimize_loop(8)
     heatmap = []
     for i in range(224):
         in_tensor = torch.zeros((224,2))
@@ -419,7 +452,7 @@ for x in t:
         baseline_label = baseline.argmax()
         start_time = timeit.default_timer()
 
-        explanation1  = optimize(botorch=True)
+        explanation1  = optimize()
         times.append(timeit.default_timer()-start_time)
 
         scores1 = [
